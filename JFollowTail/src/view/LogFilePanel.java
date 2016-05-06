@@ -7,19 +7,17 @@ import java.awt.event.AdjustmentEvent;
 import java.awt.event.AdjustmentListener;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.io.IOException;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.regex.Pattern;
 
 import javax.swing.JPanel;
+import javax.swing.JScrollBar;
 import javax.swing.JScrollPane;
 import javax.swing.ListSelectionModel;
-import javax.swing.SwingUtilities;
 import javax.swing.table.DefaultTableModel;
-
-import model.LogFile;
 
 import org.jdesktop.swingx.JXTable;
 import org.jdesktop.swingx.decorator.ColorHighlighter;
@@ -27,169 +25,180 @@ import org.jdesktop.swingx.decorator.Highlighter;
 import org.jdesktop.swingx.decorator.PatternPredicate;
 import org.jdesktop.swingx.search.SearchFactory;
 
+import interfaces.ModelListener;
+import model.LogFile;
+import model.PropertyChange;
 import view.highlightings.Highlighting;
 
-public class LogFilePanel extends JPanel implements PropertyChangeListener {
+public class LogFilePanel extends JPanel implements PropertyChangeListener, ModelListener {
 
-	public static final String SCROLL_CHANGED_BY_USER = "Scroll changed by user";
+	private static final String NO_LOG_FILE = "No log file";
 	private static final long serialVersionUID = 1L;
 	private JXTable table;
 	private JScrollPane viewLogScrollPane;
 	private LogFile logFile;
 	private DefaultTableModel tableModel;
 	private JFollowTailFrame parentFrame;
-	
-	public LogFilePanel(JFollowTailFrame parentFrame){
+	private boolean followTail;
+
+	public LogFilePanel(JFollowTailFrame parentFrame) {
 		this.parentFrame = parentFrame;
 		createUI();
 	}
-	
+
 	private void createUI() {
 		setLayout(new BorderLayout());
 		initTable();
 		viewLogScrollPane = new JScrollPane(table);
 		viewLogScrollPane.getViewport().setBackground(Color.WHITE);
 		viewLogScrollPane.getVerticalScrollBar().addAdjustmentListener(new AdjustmentListener() {
-			
+
 			@Override
 			public void adjustmentValueChanged(AdjustmentEvent e) {
-				if(logFile==null){
+				if (logFile == null) {
 					return;
 				}
-				boolean oldValue = logFile.isFollowTail();
-				//if reaches the maximum of scroll -> set follow Tail
-				if(e.getValue() == e.getAdjustable().getMaximum()-viewLogScrollPane.getVerticalScrollBar().getVisibleAmount()){
-					logFile.setFollowTail(true);
-				}else{
-					logFile.setFollowTail(false);
+				boolean oldValue = followTail;
+				JScrollBar vbar = (JScrollBar) e.getSource();
+				// scroll changed by user (e.getValueIsAdjusting() == true)
+				boolean adjusting = e.getValueIsAdjusting();
+				if (adjusting) {
+					followTail = false;
 				}
-				firePropertyChange(SCROLL_CHANGED_BY_USER, oldValue, logFile.isFollowTail());
+				// if not follow tail and if
+				// reaches the maximum of scroll -> set follow Tail
+				if (!followTail
+						&& e.getAdjustable().getValue() + vbar.getVisibleAmount() == e.getAdjustable().getMaximum()) {
+					followTail = true;
+				}
+
+				if (oldValue != followTail) {
+					firePropertyChange(PropertyChange.SCROLL_CHANGED_BY_USER.name(), oldValue, followTail);
+				}
 			}
 		});
-		
+
 		add(viewLogScrollPane, BorderLayout.CENTER);
 	}
 
 	private void initTable() {
 		table = new JXTable();
-	    table.setSelectionMode(ListSelectionModel.SINGLE_INTERVAL_SELECTION);
-	    //hide columns
-	  	table.setTableHeader(null);
-	  	//hide grid
-	  	table.setShowGrid(false);
-	  	table.setIntercellSpacing(new Dimension(0, 0));
-	    tableModel = new DefaultTableModel(null, new String[]{"text"});
-	    table.setModel(tableModel);
-	    table.setHorizontalScrollEnabled(true);
+		table.setSelectionMode(ListSelectionModel.SINGLE_INTERVAL_SELECTION);
+		// hide columns
+		table.setTableHeader(null);
+		// hide grid
+		table.setShowGrid(false);
+		table.setIntercellSpacing(new Dimension(0, 0));
+		tableModel = new DefaultTableModel(null, new String[] { "text" });
+		table.setModel(tableModel);
+		table.setHorizontalScrollEnabled(true);
 	}
 
-	public void processHighlightings(){
+	public void processHighlightings() {
 		List<Highlighting> highlightings = parentFrame.getHighlightings();
-		//removes all the previous highlighters
-		for(Highlighter h: table.getHighlighters()){
+		// removes all the previous highlighters
+		for (Highlighter h : table.getHighlighters()) {
 			table.removeHighlighter(h);
 		}
-		
+
 		PatternPredicate patternPredicate = null;
 		ColorHighlighter highlighter = null;
 		List<Highlighter> highlighters = new LinkedList<Highlighter>();
-		for(Highlighting highlighting : highlightings){
-			//TODO set case sensitive and insensitive (now it's only case insensitive)
-		    patternPredicate = new PatternPredicate(Pattern.compile(highlighting.getToken(),Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE));
-		    highlighter = new ColorHighlighter(patternPredicate, highlighting.getBackgroundColor(), highlighting.getForegroundColor());
-		    highlighters.add(highlighter);
+		for (Highlighting highlighting : highlightings) {
+			// TODO set case sensitive and insensitive (now it's only case
+			// insensitive)
+			patternPredicate = new PatternPredicate(
+					Pattern.compile(highlighting.getToken(), Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE));
+			highlighter = new ColorHighlighter(patternPredicate, highlighting.getBackgroundColor(),
+					highlighting.getForegroundColor());
+			highlighters.add(highlighter);
 		}
-		//Reverse order to work properly
+		// Reverse order to work properly
 		Collections.reverse(highlighters);
 		table.setHighlighters(highlighters.toArray(new Highlighter[0]));
 	}
 
 	public String getPath() {
-		if(logFile!=null){
+		if (logFile != null) {
 			return logFile.getPath();
 		}
-		return "No log file";
+		return NO_LOG_FILE;
 	}
 
 	public String getFileName() {
-		if(logFile!=null){
+		if (logFile != null) {
 			return logFile.getFileName();
 		}
-		return "No log file";
+		return NO_LOG_FILE;
 	}
 
-	public synchronized void setLogFile(LogFile logFile) {
+	public synchronized void setLogFile(LogFile logFile) throws IOException {
 		this.logFile = logFile;
 		logFile.addPropertyChangeListener(this);
-		loadInitialData(logFile);
+		logFile.setModelListener(this);
+		logFile.load();
 		processHighlightings();
 	}
 
-	private void loadInitialData(LogFile logFile) {
-		removeAllRows();
-		String[] auxStr = new String[1];
-		Iterator<String> it = logFile.getLines().iterator();
-		for(;it.hasNext() ;){
-			auxStr[0] = it.next();
-			tableModel.addRow(auxStr);
-		}
-		table.packAll();
-	}
-	
-	private void removeAllRows(){
+	private void removeAllRows() {
 		if (tableModel.getRowCount() > 0) {
-		    for (int i = tableModel.getRowCount() - 1; i > -1; i--) {
-		    	tableModel.removeRow(i);
-		    }
+			tableModel.setRowCount(0);
 		}
 	}
-	
+
 	@Override
 	public void propertyChange(PropertyChangeEvent evt) {
-		if(LogFile.LOG_FILE_CHANGED.equals(evt.getPropertyName())){
-			SwingUtilities.invokeLater(new Runnable(){
-
-				@Override
-				public void run() {
-					//TODO try to add the new lines only
-					removeAllRows();
-					String[] auxStr = new String[1];
-					Iterator<String> it = logFile.getLines().iterator();
-					for(;it.hasNext() ;){
-						auxStr[0] = it.next();
-						tableModel.addRow(auxStr);
-					}
-					table.packAll();
-					//follow Tail
-					if(logFile.isFollowTail()){
-						table.scrollRowToVisible(tableModel.getRowCount()-1);
-					}
-					
-				}
-			});
+		// TODO: check if we still need this method
+		if (PropertyChange.LOG_FILE_CHANGED.name().equals(evt.getPropertyName())) {
 		}
 	}
 
 	public void setFollowTail(boolean followTail) {
-		if(logFile == null){
+		if (logFile == null) {
 			return;
 		}
-		logFile.setFollowTail(followTail);
-		//follow Tail
-		if(followTail){
-			table.scrollRowToVisible(tableModel.getRowCount()-1);
+		this.followTail = followTail;
+		// follow Tail
+		scroll(followTail);
+	}
+
+	private void scroll(boolean followTail) {
+		if (followTail) {
+			table.scrollRowToVisible(tableModel.getRowCount() - 1);
 		}
 	}
-	
-	public boolean isFollowingTail(){
-		return logFile.isFollowTail();
+
+	public boolean isFollowingTail() {
+		return followTail;
 	}
-	
-	public void showFindDialog(){
+
+	public void showFindDialog() {
 		SearchFactory.getInstance().showFindInput(LogFilePanel.this, table.getSearchable());
 	}
-	
-	public void closeLogFile(){
+
+	public void closeLogFile() {
 		logFile.stopCurrentFileListener();
+	}
+
+	@Override
+	public void add(String value) {
+		tableModel.addRow(new String[] { value });
+		scroll(followTail);
+	}
+
+	@Override
+	public void clear() {
+		removeAllRows();
+
+	}
+
+	@Override
+	public void done() {
+		table.packAll();
+	}
+
+	@Override
+	public int countItens() {
+		return tableModel.getRowCount();
 	}
 }

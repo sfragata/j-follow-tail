@@ -3,178 +3,152 @@ package model;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
-import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.stream.Stream;
+
+import interfaces.ModelListener;
 
 public class LogFile implements PropertyChangeListener {
+	private static final String NO_LOG_FILE = "No log file";
 	private static final String TAB_IN_SPACES = "        ";
-	public static final String LOG_FILE_CHANGED = "Log File Changed";
 	private File file;
-	private boolean followTail = false;
-	private List<String> lines;
 	private FileListener fileListener;
 	private PropertyChangeSupport propertyChangeSupport;
-	
-	public LogFile(File file) throws IOException{
+	private ModelListener modelListener = new NullListener();// Default Listener
+																// - do nothing
+
+	public LogFile(File file) throws IOException {
 		propertyChangeSupport = new PropertyChangeSupport(this);
-		lines = new ArrayList<String>();
 		setFile(file);
+	}
+
+	public void setModelListener(ModelListener listener) {
+		this.modelListener = listener;
 	}
 
 	public File getFile() {
 		return file;
 	}
 
-	public void setFile(File file) throws IOException{
+	public void setFile(File file) throws IOException {
 		this.file = file;
-		loadFile();
 		createFileListener();
+
 	}
 
 	public void stopCurrentFileListener() {
-		if(fileListener != null){
+		if (fileListener != null) {
 			fileListener.stop();
 		}
 	}
 
-	private synchronized void loadFile() throws IOException {
-		try{
-			BufferedInputStream bis = new BufferedInputStream(new FileInputStream(file));
-			byte fileContentAsBytes[] = new byte[(int)file.length()];
-			bis.read(fileContentAsBytes);
-			bis.close();
-			//load lines
-			lines.clear();
-			//TODO Charset should be configurable
-			String[] newLines= new String(fileContentAsBytes,"ISO-8859-1").split("\n");
-			//add the rest of the new lines
-			for(int i=0 ; i<newLines.length ; i++){
-				lines.add(processLine(newLines[i]));
-			}
-			//add the last enter if exist
-			addLastEnter(fileContentAsBytes);
-		}catch(FileNotFoundException e){
-			//file was deleted or renamed
-			//clear lines
-			lines.clear();
-		}
+	public void load() throws IOException {
+		loadFile(0);
+		modelListener.done();
 	}
-	
-	private String processLine(String line){
-		//replaces tabs by spaces
+
+	private synchronized void loadFile(long skip) throws IOException {
+
+		try (Stream<String> lines = Files.lines(Paths.get(file.toURI()), StandardCharsets.ISO_8859_1)) {
+			if (skip == 0) {
+				modelListener.clear();
+			}
+			lines.skip(skip).forEach(line -> {
+				if (line != null) {
+					modelListener.add(processLine(line));
+				}
+			});
+		}
+
+	}
+
+	private String processLine(String line) {
+		// replaces tabs by spaces
 		return line.replaceAll("\t", TAB_IN_SPACES);
 	}
 
-	private void addLastEnter(byte[] fileContentAsBytes) {
-		if(fileContentAsBytes.length > 0){
-			byte[] lastByte = new byte[]{fileContentAsBytes[fileContentAsBytes.length-1]};
-			String lastChar = new String(lastByte);
-			//last char is enter...
-			if("\n".equals(lastChar)){
-				lines.add("");
-			}
-		}
-	}
-	
 	private synchronized void loadUpdatesFromFile(int oldLength, int newLength) throws IOException {
-		int bytesToRead = newLength - oldLength;
-		//special case, the file is smaller than before
-		if(newLength < oldLength){
-			loadFile();
+		// int bytesToRead = newLength - oldLength;
+		// special case, the file is smaller than before
+		if (newLength < oldLength) {
+			loadFile(0);
 			return;
 		}
-		BufferedInputStream bis = new BufferedInputStream(new FileInputStream(file));
-		byte fileContentAsBytes[] = new byte[bytesToRead];
-		//skips old length
-		bis.skip(oldLength);
-		bis.read(fileContentAsBytes);
-		bis.close();
-		//get lastLine
-		String lastLine = "";
-		if(lines.size()>0){
-			lastLine = lines.get(lines.size()-1);
-		}
-		//add new lines
-		String[] newLines = new String(fileContentAsBytes,"ISO-8859-1").split("\n");
-		
-		if(newLines.length==0){
-			return;
-		}
-		
-		//updates lastLine
-		lastLine = lastLine.concat(newLines[0]);
-		lastLine = processLine(lastLine);
-		if(lines.size()>0){
-			lines.set(lines.size()-1, lastLine);
-		}else{
-			lines.add(lastLine);
-		}
-		
-		//add the rest of the new lines
-		for(int i=1 ; i<newLines.length ; i++){
-			lines.add(processLine(newLines[i]));
-		}
-		addLastEnter(fileContentAsBytes);
-		
+
+		loadFile(modelListener.countItens());
+
 	}
-	
 
 	private void createFileListener() throws IOException {
-		//Stop previous file listener if exists
+		// Stop previous file listener if exists
 		stopCurrentFileListener();
 		fileListener = new FileListener(file);
 		fileListener.addPropertyChangeListener(this);
 	}
 
-	public boolean isFollowTail() {
-		return followTail;
-	}
-
-	public void setFollowTail(boolean followTail) {
-		this.followTail = followTail;
-	}
-
 	public String getFileName() {
-		if(file != null){
+		if (file != null) {
 			return file.getName();
 		}
-		return "No log file";
+		return NO_LOG_FILE;
 	}
 
 	public String getPath() {
-		if(file != null){
+		if (file != null) {
 			return file.getPath();
 		}
-		return "No log file";
+		return NO_LOG_FILE;
 	}
 
 	@Override
 	public void propertyChange(PropertyChangeEvent evt) {
-		if(FileListener.FILE_WAS_MODIFIED.equals(evt.getPropertyName())){
+		if (PropertyChange.FILE_WAS_MODIFIED.name().equals(evt.getPropertyName())) {
 			try {
-//				System.out.println("File was modified");
-				//Read only the updates
-				long lastLength = (Long)evt.getOldValue();
-				long newLength = (Long)evt.getNewValue();
-				loadUpdatesFromFile((int)lastLength,(int) newLength);
-				propertyChangeSupport.firePropertyChange(LOG_FILE_CHANGED, null, this);
+				// System.out.println("File was modified");
+				// Read only the updates
+				long lastLength = (Long) evt.getOldValue();
+				long newLength = (Long) evt.getNewValue();
+				loadUpdatesFromFile((int) lastLength, (int) newLength);
+				propertyChangeSupport.firePropertyChange(PropertyChange.LOG_FILE_CHANGED.name(), null, this);
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
 		}
 	}
-	
+
 	public void addPropertyChangeListener(PropertyChangeListener listener) {
 		propertyChangeSupport.addPropertyChangeListener(listener);
 	}
 
-	public synchronized List<String> getLines() {
-		return lines;
-	}
+	class NullListener implements ModelListener {
 
+		NullListener() {
+
+		}
+
+		@Override
+		public void add(String value) {
+
+		}
+
+		@Override
+		public void clear() {
+
+		}
+
+		@Override
+		public void done() {
+
+		}
+
+		@Override
+		public int countItens() {
+			return 0;
+		}
+
+	}
 }
